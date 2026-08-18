@@ -1,7 +1,13 @@
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-from parking_system.models import ParkingRecord, ParkingSlot, Vehicle, VehicleType
+from parking_system.database.connection import get_connection
+from parking_system.models import (
+    ParkingRecord,
+    ParkingSlot,
+    Vehicle,
+    VehicleType,
+)
 
 
 class ParkingService:
@@ -14,33 +20,39 @@ class ParkingService:
     """
 
     def __init__(self) -> None:
-        self.slots: List[ParkingSlot] = []
-        self.active_vehicles: Dict[str, Vehicle] = {}
-        self.vehicle_to_slot: Dict[str, int] = {}
-        self.parking_history: List[ParkingRecord] = []
+        pass
 
-        self._create_default_slots()
 
-    def _create_default_slots(self) -> None:
-        slot_id = 1
+    def find_available_slot(
+        self,
+        vehicle_type: VehicleType,
+    ) -> Optional[ParkingSlot]:
 
-        for _ in range(20):
-            self.slots.append(ParkingSlot(slot_id, VehicleType.BIKE))
-            slot_id += 1
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
 
-        for _ in range(70):
-            self.slots.append(ParkingSlot(slot_id, VehicleType.CAR))
-            slot_id += 1
+                cursor.execute(
+                    """
+                    SELECT slot_id, slot_type, occupied
+                    FROM parking_slots
+                    WHERE slot_type = %s
+                    AND occupied = FALSE
+                    ORDER BY slot_id
+                    LIMIT 1;
+                    """,
+                    (vehicle_type.value,),
+                )
 
-        for _ in range(10):
-            self.slots.append(ParkingSlot(slot_id, VehicleType.TRUCK))
-            slot_id += 1
+                row = cursor.fetchone()
 
-    def find_available_slot(self, vehicle_type: VehicleType) -> Optional[ParkingSlot]:
-        for slot in self.slots:
-            if not slot.occupied and slot.slot_type == vehicle_type:
-                return slot
-        return None
+        if row is None:
+            return None
+
+        return ParkingSlot(
+            slot_id=row[0],
+            slot_type=VehicleType(row[1]),
+            occupied=row[2],
+        )
 
     def calculate_fee(
         self,
@@ -73,71 +85,197 @@ class ParkingService:
         vehicle_type: VehicleType,
         entry_time: Optional[datetime] = None,
     ) -> Tuple[bool, str, Optional[int]]:
+
         number = number.strip().upper()
 
         if not number:
             return False, "Vehicle number cannot be empty.", None
 
-        if number in self.active_vehicles:
-            return False, "Vehicle is already parked.", None
-
-        slot = self.find_available_slot(vehicle_type)
-
-        if slot is None:
-            return False, f"No {vehicle_type.value.lower()} slot is available.", None
-
         if entry_time is None:
             entry_time = datetime.now()
 
-        vehicle = Vehicle(number, vehicle_type, entry_time)
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
 
-        self.active_vehicles[number] = vehicle
-        self.vehicle_to_slot[number] = slot.slot_id
-        slot.occupied = True
+                # Check whether the vehicle is already parked.
+                cursor.execute(
+                    """
+                    SELECT v.id
+                    FROM vehicles v
+                    JOIN parking_records pr
+                        ON v.id = pr.vehicle_id
+                    WHERE v.registration_number = %s
+                    AND pr.exit_time IS NULL;
+                    """,
+                    (number,),
+                )
+
+                if cursor.fetchone() is not None:
+                    return False, "Vehicle is already parked.", None
+
+                # Find available slot.
+                cursor.execute(
+                    """
+                    SELECT slot_id
+                    FROM parking_slots
+                    WHERE slot_type = %s
+                    AND occupied = FALSE
+                    ORDER BY slot_id
+                    LIMIT 1
+                    FOR UPDATE;
+                    """,
+                    (vehicle_type.value,),
+                )
+
+                slot = cursor.fetchone()
+
+                if slot is None:
+                    return (
+                        False,
+                        f"No {vehicle_type.value.lower()} slot is available.",
+                        None,
+                    )
+
+                slot_id = slot[0]
+
+                # Create/find vehicle.
+                cursor.execute(
+                    """
+                    INSERT INTO vehicles
+                        (registration_number, vehicle_type)
+                    VALUES (%s, %s)
+                    ON CONFLICT (registration_number)
+                    DO UPDATE SET vehicle_type = EXCLUDED.vehicle_type
+                    RETURNING id;
+                    """,
+                    (number, vehicle_type.value),
+                )
+
+                vehicle_id = cursor.fetchone()[0]
+
+                # Mark slot occupied.
+                cursor.execute(
+                    """
+                    UPDATE parking_slots
+                    SET occupied = TRUE
+                    WHERE slot_id = %s;
+                    """,
+                    (slot_id,),
+                )
+
+                # Create parking record.
+                cursor.execute(
+                    """
+                    INSERT INTO parking_records
+                        (vehicle_id, slot_id, entry_time)
+                    VALUES (%s, %s, %s);
+                    """,
+                    (vehicle_id, slot_id, entry_time),
+                )
+
+            connection.commit()
 
         return (
             True,
-            f"Vehicle parked successfully in slot {slot.slot_id}.",
-            slot.slot_id,
+            f"Vehicle parked successfully in slot {slot_id}.",
+            slot_id,
         )
+
+    def calculate_fee(self, vehicle: Vehicle, exit_time: datetime) -> float:
+        duration = exit_time - vehicle.entry_time
+
+        minutes = int(duration.total_seconds() / 60)
+
+        hours = (minutes + 59) // 60
+
+        if hours == 0:
+            hours = 1
+
+        fee = 20.0
+
+        if hours > 1:
+            fee += (hours - 1) * 10
+
+        if vehicle.vehicle_type == VehicleType.BIKE:
+            fee *= 0.5
+
+        elif vehicle.vehicle_type == VehicleType.TRUCK:
+            fee *= 1.5
+
+        return fee
 
     def exit_vehicle(
         self,
         number: str,
         exit_time: Optional[datetime] = None,
     ) -> Tuple[bool, str, Optional[float]]:
+
         number = number.strip().upper()
-
-        vehicle = self.active_vehicles.get(number)
-
-        if vehicle is None:
-            return False, "Vehicle not found.", None
 
         if exit_time is None:
             exit_time = datetime.now()
 
-        fee = self.calculate_fee(vehicle, exit_time)
-        slot_id = self.vehicle_to_slot[number]
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
 
-        slot = next(
-            slot for slot in self.slots
-            if slot.slot_id == slot_id
-        )
-        slot.occupied = False
+                cursor.execute(
+                    """
+                    SELECT
+                        pr.id,
+                        v.id,
+                        v.registration_number,
+                        v.vehicle_type,
+                        pr.slot_id,
+                        pr.entry_time
+                    FROM parking_records pr
+                    JOIN vehicles v
+                        ON v.id = pr.vehicle_id
+                    WHERE v.registration_number = %s
+                    AND pr.exit_time IS NULL;
+                    """,
+                    (number,),
+                )
 
-        self.parking_history.append(
-            ParkingRecord(
-                vehicle_number=vehicle.number,
-                vehicle_type=vehicle.vehicle_type,
-                slot_id=slot_id,
-                entry_time=vehicle.entry_time,
-                exit_time=exit_time,
-                fee=fee,
-            )
-        )
+                row = cursor.fetchone()
 
-        del self.active_vehicles[number]
-        del self.vehicle_to_slot[number]
+                if row is None:
+                    return False, "Vehicle not found.", None
+
+                record_id = row[0]
+                slot_id = row[4]
+                entry_time = row[5]
+                vehicle_type = VehicleType(row[3])
+
+                vehicle = Vehicle(
+                    number,
+                    vehicle_type,
+                    entry_time,
+                )
+
+                fee = self.calculate_fee(vehicle, exit_time)
+
+                # Complete parking record.
+                cursor.execute(
+                    """
+                    UPDATE parking_records
+                    SET exit_time = %s,
+                        fee = %s
+                    WHERE id = %s;
+                    """,
+                    (exit_time, fee, record_id),
+                )
+
+                # Free slot.
+                cursor.execute(
+                    """
+                    UPDATE parking_slots
+                    SET occupied = FALSE
+                    WHERE slot_id = %s;
+                    """,
+                    (slot_id,),
+                )
+
+            connection.commit()
 
         return (
             True,
@@ -145,17 +283,88 @@ class ParkingService:
             fee,
         )
 
-    def get_active_vehicles(self) -> List[Tuple[Vehicle, int]]:
+    def get_active_vehicles(self):
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+
+                cursor.execute(
+                    """
+                    SELECT
+                        v.registration_number,
+                        v.vehicle_type,
+                        pr.entry_time,
+                        pr.slot_id
+                    FROM vehicles v
+                    JOIN parking_records pr
+                        ON v.id = pr.vehicle_id
+                    WHERE pr.exit_time IS NULL
+                    ORDER BY pr.slot_id;
+                    """
+                )
+
+                rows = cursor.fetchall()
+
         return [
-            (vehicle, self.vehicle_to_slot[number])
-            for number, vehicle in self.active_vehicles.items()
+            (
+                Vehicle(
+                    number=row[0],
+                    vehicle_type=VehicleType(row[1]),
+                    entry_time=row[2],
+                ),
+                row[3],
+            )
+            for row in rows
         ]
 
     def get_available_slots(self) -> List[ParkingSlot]:
-        return [slot for slot in self.slots if not slot.occupied]
+
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+
+                cursor.execute(
+                    """
+                    SELECT slot_id, slot_type, occupied
+                    FROM parking_slots
+                    WHERE occupied = FALSE
+                    ORDER BY slot_id;
+                    """
+                )
+
+                rows = cursor.fetchall()
+
+        return [
+            ParkingSlot(
+                slot_id=row[0],
+                slot_type=VehicleType(row[1]),
+                occupied=row[2],
+            )
+            for row in rows
+        ]
 
     def get_occupied_slots(self) -> List[ParkingSlot]:
-        return [slot for slot in self.slots if slot.occupied]
+
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+
+                cursor.execute(
+                    """
+                    SELECT slot_id, slot_type, occupied
+                    FROM parking_slots
+                    WHERE occupied = TRUE
+                    ORDER BY slot_id;
+                    """
+                )
+
+                rows = cursor.fetchall()
+
+        return [
+            ParkingSlot(
+                slot_id=row[0],
+                slot_type=VehicleType(row[1]),
+                occupied=row[2],
+            )
+            for row in rows
+        ]
 
     def get_slot(self, slot_id: int) -> Optional[ParkingSlot]:
         for slot in self.slots:
@@ -167,21 +376,91 @@ class ParkingService:
         return self.active_vehicles.get(number.strip().upper())
 
     def get_total_slots(self) -> int:
-        return len(self.slots)
+
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+
+                cursor.execute(
+                    "SELECT COUNT(*) FROM parking_slots;"
+                )
+
+                return cursor.fetchone()[0]
 
     def get_occupied_count(self) -> int:
-        return len(self.active_vehicles)
+
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM parking_slots
+                    WHERE occupied = TRUE;
+                    """
+                )
+
+                return cursor.fetchone()[0]
 
     def get_available_count(self) -> int:
-        return len(self.slots) - len(self.active_vehicles)
+        return self.get_total_slots() - self.get_occupied_count()
 
     def get_occupancy_rate(self) -> float:
-        if not self.slots:
+
+        total = self.get_total_slots()
+
+        if total == 0:
             return 0.0
-        return self.get_occupied_count() / len(self.slots) * 100
+
+        occupied = self.get_occupied_count()
+
+        return occupied / total * 100
 
     def get_total_revenue(self) -> float:
-        return sum(record.fee or 0.0 for record in self.parking_history)
+
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+
+                cursor.execute(
+                    """
+                    SELECT COALESCE(SUM(fee), 0)
+                    FROM parking_records
+                    WHERE fee IS NOT NULL;
+                    """
+                )
+
+                return float(cursor.fetchone()[0])
 
     def get_parking_history(self) -> List[ParkingRecord]:
-        return list(self.parking_history)
+
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+
+                cursor.execute(
+                    """
+                    SELECT
+                        v.registration_number,
+                        v.vehicle_type,
+                        pr.slot_id,
+                        pr.entry_time,
+                        pr.exit_time,
+                        pr.fee
+                    FROM parking_records pr
+                    JOIN vehicles v
+                        ON v.id = pr.vehicle_id
+                    ORDER BY pr.entry_time DESC;
+                    """
+                )
+
+                rows = cursor.fetchall()
+
+        return [
+            ParkingRecord(
+                vehicle_number=row[0],
+                vehicle_type=VehicleType(row[1]),
+                slot_id=row[2],
+                entry_time=row[3],
+                exit_time=row[4],
+                fee=float(row[5]) if row[5] is not None else None,
+            )
+            for row in rows
+        ]
