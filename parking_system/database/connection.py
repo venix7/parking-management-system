@@ -1,9 +1,12 @@
-import os
-
-import psycopg
-
-
 def get_connection():
+
+    database_url = os.getenv("DATABASE_URL")
+
+    print("DATABASE_URL exists:", bool(database_url))
+
+    if database_url:
+        return psycopg.connect(database_url)
+
     return psycopg.connect(
         host=os.getenv("DB_HOST", "localhost"),
         port=os.getenv("DB_PORT", "5432"),
