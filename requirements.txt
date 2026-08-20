@@ -1,5 +1,7 @@
-psycopg[binary]
 fastapi
 uvicorn
+psycopg
+pydantic
 streamlit
 requests
+pandas
