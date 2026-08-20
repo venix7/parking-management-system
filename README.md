@@ -2,6 +2,28 @@
 
 A full-stack parking management system built with **Python, Streamlit, FastAPI, and PostgreSQL**. The application manages vehicle entry and exit, automatically assigns suitable parking slots, calculates parking fees, stores parking history, and provides dashboard analytics.
 
+## Live Deployment
+
+| Component | Deployment |
+|---|---|
+| **Streamlit Frontend** | https://parking-lot-management-system-tew8dadq6fzrrkczs6fb2o.streamlit.app/ |
+| **FastAPI Backend** | https://parking-management-system-7sni.onrender.com |
+| **API Documentation** | https://parking-management-system-7sni.onrender.com/docs |
+
+The deployed application uses the following architecture:
+
+```text
+Streamlit Community Cloud
+        ↓
+FastAPI Backend on Render
+        ↓
+Neon PostgreSQL
+```
+
+**Neon PostgreSQL** is used as the hosted PostgreSQL database for persistent parking data. The database connection is handled by the FastAPI backend, so no public database URL is exposed in the project README.
+
+> **Note:** The FastAPI backend may take a short time to respond after periods of inactivity because it is hosted on Render.
+
 ## Features
 
 - Register and park vehicles
@@ -13,7 +35,12 @@ A full-stack parking management system built with **Python, Streamlit, FastAPI, 
 - Release parking slots when vehicles exit
 - View available parking slots
 - Maintain parking history
-- Dashboard with total slots, occupied slots, available slots, occupancy rate, and total revenue
+- Dashboard with:
+  - Total parking slots
+  - Occupied slots
+  - Available slots
+  - Occupancy rate
+  - Total revenue
 - Revenue-over-time analytics
 - Streamlit web dashboard
 - FastAPI REST API with Swagger documentation
@@ -51,6 +78,9 @@ A full-stack parking management system built with **Python, Streamlit, FastAPI, 
 - **Pandas** — analytics and data processing
 - **Pytest** — testing
 - **Uvicorn** — ASGI server
+- **Render** — FastAPI deployment
+- **Streamlit Community Cloud** — frontend deployment
+- **Neon PostgreSQL** — hosted PostgreSQL database
 
 ## Project Structure
 
@@ -182,7 +212,7 @@ DATABASE_URL=your_database_url
 For the deployed Streamlit application, configure the backend URL through Streamlit Secrets:
 
 ```toml
-API_URL = "https://your-fastapi-backend-url"
+API_URL = "https://parking-management-system-7sni.onrender.com"
 ```
 
 Do not commit the secrets file to GitHub.
@@ -198,7 +228,9 @@ The FastAPI backend provides endpoints for the main parking operations, includin
 - Available parking slots
 - Parking history
 
-Interactive API documentation is available at `/docs` when the backend is running.
+Interactive API documentation is available at:
+
+https://parking-management-system-7sni.onrender.com/docs
 
 ## Testing
 
@@ -214,19 +246,6 @@ Run the test suite from the project root:
 python -m pytest
 ```
 
-## Deployment
-
-The project can be deployed using separate services for each layer:
-
-```text
-Streamlit Community Cloud
-        ↓
-FastAPI Backend on Render
-        ↓
-PostgreSQL Database on Neon
-```
-
-The Streamlit frontend communicates with the deployed FastAPI backend using the `API_URL` configuration.
 
 ## Security Notes
 
