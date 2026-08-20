@@ -232,21 +232,6 @@ Interactive API documentation is available at:
 
 https://parking-management-system-7sni.onrender.com/docs
 
-## Testing
-
-Make sure the virtual environment is activated and Pytest is installed:
-
-```powershell
-pip install pytest
-```
-
-Run the test suite from the project root:
-
-```powershell
-python -m pytest
-```
-
-
 ## Security Notes
 
 - Do not commit `.env` files.
